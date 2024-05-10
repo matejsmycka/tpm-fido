@@ -44,6 +44,15 @@ To run:
 ```
 Note: do not run with `sudo` or as root, as it will not work.
 
+## Persistent setup
+
+```bash 
+git clone git@github.com:psanford/tpm-fido.git
+cd tpm-fido
+chmod +x install.sh
+./install.sh
+```
+
 ## Dependencies
 
 tpm-fido requires `pinentry` to be available on the system. If you have gpg installed you most likely already have `pinentry`.
