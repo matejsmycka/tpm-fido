@@ -32,6 +32,13 @@ type Result struct {
 	Error error
 }
 
+const (
+	defaultTimeout       = 2 * time.Second
+	clientGoneTimeoutErr = "client is likely gone"
+	timeoutErr           = "request timed out"
+	anotherRequestErr    = "another request is already in progress"
+)
+
 func (pe *Pinentry) ConfirmPresence(prompt string, challengeParam, applicationParam [32]byte) (chan Result, error) {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
@@ -73,18 +80,16 @@ func (pe *Pinentry) prompt(req *request, prompt string) {
 		select {
 		case req.pendingResult <- r:
 		case <-time.After(req.timeout):
-			// we expect requests to come in every ~750ms.
-			// If we've been waiting for 2 seconds the client
-			// is likely gone.
 		}
 
 		pe.mu.Lock()
 		pe.activeRequest = nil
 		pe.mu.Unlock()
 	}
-	binary := FindPinentryGUIPath()
+
+	clientBinary := FindPinentryGUIPath()
 	client, err := pinentry.NewClient(
-		pinentry.WithBinaryName(binary),
+		pinentry.WithBinaryName(clientBinary),
 		pinentry.WithDesc(prompt),
 		pinentry.WithTitle("TPM-FIDO"),
 		pinentry.WithPrompt("TPM-FIDO"),
@@ -94,34 +99,29 @@ func (pe *Pinentry) prompt(req *request, prompt string) {
 		return
 	}
 	defer client.Close()
-	confirmed, err := client.Confirm(prompt)
 
+	confirmed, err := client.Confirm(prompt)
 	if err != nil {
 		sendResult(Result{Error: err})
 		return
 	}
 
-	promptResult := make(chan bool)
-
-	go func() {
-		promptResult <- confirmed
-	}()
-
 	timer := time.NewTimer(req.timeout)
 
 	for {
 		select {
-		case ok := <-promptResult:
-			sendResult(Result{
-				OK: ok,
-			})
+		case ok := <-func() chan bool {
+			result := make(chan bool, 1)
+			result <- confirmed
+			return result
+		}():
+			sendResult(Result{OK: ok})
 			return
+
 		case <-timer.C:
-			sendResult(Result{
-				OK:    false,
-				Error: errors.New("request timed out"),
-			})
+			sendResult(Result{OK: false, Error: errors.New(timeoutErr)})
 			return
+
 		case d := <-req.extendTimeout:
 			if !timer.Stop() {
 				<-timer.C
@@ -129,7 +129,6 @@ func (pe *Pinentry) prompt(req *request, prompt string) {
 			timer.Reset(d)
 		}
 	}
-
 }
 
 func FindPinentryGUIPath() string {
