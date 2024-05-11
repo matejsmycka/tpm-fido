@@ -2,6 +2,7 @@ package pinentry
 
 import (
 	"errors"
+	"log"
 	"os/exec"
 	"sync"
 	"time"
@@ -80,6 +81,9 @@ func (pe *Pinentry) prompt(req *request, prompt string) {
 		select {
 		case req.pendingResult <- r:
 		case <-time.After(req.timeout):
+			// we expect requests to come in every ~750ms.
+			// If we've been waiting for 2 seconds the client
+			// is likely gone.
 		}
 
 		pe.mu.Lock()
@@ -88,6 +92,11 @@ func (pe *Pinentry) prompt(req *request, prompt string) {
 	}
 
 	clientBinary := FindPinentryGUIPath()
+	if clientBinary == "" {
+		log.Printf("Failed to detect gui pinentry binary. Falling back to default `pinentry`")
+		clientBinary = "pinentry"
+	}
+
 	client, err := pinentry.NewClient(
 		pinentry.WithBinaryName(clientBinary),
 		pinentry.WithDesc(prompt),
