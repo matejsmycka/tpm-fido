@@ -1,16 +1,12 @@
 package pinentry
 
 import (
-	"context"
 	"errors"
-	"fmt"
-	"log"
 	"os/exec"
 	"sync"
 	"time"
 
-	assuan "github.com/foxcpp/go-assuan/client"
-	"github.com/foxcpp/go-assuan/pinentry"
+	"github.com/twpayne/go-pinentry/v4"
 )
 
 func New() *Pinentry {
@@ -86,32 +82,29 @@ func (pe *Pinentry) prompt(req *request, prompt string) {
 		pe.activeRequest = nil
 		pe.mu.Unlock()
 	}
-
-	childCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	p, cmd, err := launchPinEntry(childCtx)
+	binary := FindPinentryGUIPath()
+	client, err := pinentry.NewClient(
+		pinentry.WithBinaryName(binary),
+		pinentry.WithDesc(prompt),
+		pinentry.WithTitle("TPM-FIDO"),
+		pinentry.WithPrompt("TPM-FIDO"),
+	)
 	if err != nil {
-		sendResult(Result{
-			OK:    false,
-			Error: fmt.Errorf("failed to start pinentry: %w", err),
-		})
+		sendResult(Result{Error: err})
 		return
 	}
-	defer func() {
-		cancel()
-		cmd.Wait()
-	}()
+	defer client.Close()
+	confirmed, err := client.Confirm(prompt)
 
-	defer p.Shutdown()
-	p.SetTitle("TPM-FIDO")
-	p.SetPrompt("TPM-FIDO")
-	p.SetDesc(prompt)
+	if err != nil {
+		sendResult(Result{Error: err})
+		return
+	}
 
 	promptResult := make(chan bool)
 
 	go func() {
-		err := p.Confirm()
-		promptResult <- err == nil
+		promptResult <- confirmed
 	}()
 
 	timer := time.NewTimer(req.timeout)
@@ -136,6 +129,7 @@ func (pe *Pinentry) prompt(req *request, prompt string) {
 			timer.Reset(d)
 		}
 	}
+
 }
 
 func FindPinentryGUIPath() string {
@@ -155,37 +149,4 @@ func FindPinentryGUIPath() string {
 		}
 	}
 	return ""
-}
-
-func launchPinEntry(ctx context.Context) (*pinentry.Client, *exec.Cmd, error) {
-	pinEntryCmd := FindPinentryGUIPath()
-	if pinEntryCmd == "" {
-		log.Printf("Failed to detect gui pinentry binary. Falling back to default `pinentry`")
-		pinEntryCmd = "pinentry"
-	}
-	cmd := exec.CommandContext(ctx, pinEntryCmd)
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, nil, err
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, nil, err
-	}
-
-	var c pinentry.Client
-	c.Session, err = assuan.Init(assuan.ReadWriteCloser{
-		ReadCloser:  stdout,
-		WriteCloser: stdin,
-	})
-
-	if err != nil {
-		return nil, nil, err
-	}
-	return &c, cmd, nil
 }
